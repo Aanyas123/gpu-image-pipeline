@@ -1,0 +1,7 @@
+numpy>=1.24
+pillow>=10.0
+matplotlib>=3.7
+# NVRTC runtime compiler (skip if a CUDA Toolkit is installed; the loader also
+# looks in $CUDA_PATH and /usr/local/cuda). The CUDA driver itself comes with
+# the NVIDIA display driver.
+nvidia-cuda-nvrtc-cu12>=12.0
