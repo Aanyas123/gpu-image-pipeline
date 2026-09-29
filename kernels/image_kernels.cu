@@ -13,7 +13,10 @@
 
 #define HIST_BINS 256
 #define MAX_BLUR_RADIUS 16
-#define BLUR_TILE 128   // threads per block for the 1-D blur passes
+#define BLUR_TILE 128   // threads per block for the row blur pass
+#define COL_TILE_W 32   // column blur tile width (= one warp)
+#define COL_TILE_H 64   // column blur tile height
+#define COL_THREADS_Y 8 // column blur block is COL_TILE_W x COL_THREADS_Y
 #define SOBEL_TILE 16   // SOBEL_TILE x SOBEL_TILE threads per block
 
 // Gaussian weights live in constant memory: every thread in a warp reads the
@@ -30,17 +33,21 @@ __device__ __forceinline__ unsigned char ToByte(float v) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Interleaved RGB (HxWx3, uint8) -> luminance (HxW, uint8), ITU-R BT.601.
+// 1. Interleaved RGB (HxWx3, uint8) -> luminance (HxW, uint8), ITU-R BT.601
+//    in 8.8 fixed point: (77 R + 150 G + 29 B + 128) >> 8. Integer math is
+//    bit-exact with the CPU reference; float math with fast-math/FMA flips
+//    pixels on .5 boundaries, which the equalization LUT then amplifies.
 // ---------------------------------------------------------------------------
 extern "C" __global__ void RgbToGray(const unsigned char* __restrict__ rgb,
                                      unsigned char* __restrict__ gray,
                                      int num_pixels) {
   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < num_pixels;
        i += gridDim.x * blockDim.x) {
-    const float r = rgb[3 * i + 0];
-    const float g = rgb[3 * i + 1];
-    const float b = rgb[3 * i + 2];
-    gray[i] = ToByte(0.299f * r + 0.587f * g + 0.114f * b);
+    const unsigned int r = rgb[3 * i + 0];
+    const unsigned int g = rgb[3 * i + 1];
+    const unsigned int b = rgb[3 * i + 2];
+    gray[i] = static_cast<unsigned char>((77u * r + 150u * g + 29u * b +
+                                          128u) >> 8);
   }
 }
 
@@ -73,6 +80,7 @@ extern "C" __global__ void Histogram256(const unsigned char* __restrict__ img,
 //    scan in shared memory turns the histogram into a CDF, then each thread
 //    produces one LUT entry:
 //        lut[v] = round((cdf[v] - cdf_min) * 255 / (N - cdf_min))
+//    computed in 64-bit integers so it is exact.
 // ---------------------------------------------------------------------------
 extern "C" __global__ void BuildEqualizationLut(
     const unsigned int* __restrict__ hist, unsigned char* __restrict__ lut,
@@ -103,9 +111,9 @@ extern "C" __global__ void BuildEqualizationLut(
     // Constant image, or a bin below the first occupied one.
     lut[t] = (denom == 0) ? static_cast<unsigned char>(t) : 0;
   } else {
-    const float scaled = static_cast<float>(s_cdf[t] - cdf_min) * 255.0f /
-                         static_cast<float>(denom);
-    lut[t] = ToByte(scaled);
+    const unsigned long long numer =
+        static_cast<unsigned long long>(s_cdf[t] - cdf_min) * 255ull;
+    lut[t] = static_cast<unsigned char>((numer + denom / 2) / denom);
   }
 }
 
@@ -157,33 +165,43 @@ extern "C" __global__ void GaussianBlurRows(const unsigned char* __restrict__ in
 }
 
 // ---------------------------------------------------------------------------
-// 5b. Vertical Gaussian pass (float -> uint8). Same tiling as 5a but along a
-//     column: blockIdx.x selects the column, blockIdx.y a run of rows.
-//     Adjacent threads in a warp read vertically adjacent pixels, which is
-//     uncoalesced; see README "Lessons learned" for the trade-off discussion.
+// 5b. Vertical Gaussian pass (float -> uint8).
+//     A first version mirrored 5a with one block per column, so the 32
+//     threads of a warp read 32 vertically adjacent pixels - 32 separate
+//     memory transactions per warp load - and it ran ~3.8x slower than the
+//     row pass. This version uses 2-D tiles COL_TILE_W columns wide and
+//     COL_TILE_H rows tall (plus halo): threadIdx.x walks along a row, so every
+//     warp load is one coalesced 128-byte transaction. Each thread computes
+//     COL_TILE_H / COL_THREADS_Y outputs. The +1 padding column avoids
+//     shared-memory bank conflicts.
 // ---------------------------------------------------------------------------
 extern "C" __global__ void GaussianBlurCols(const float* __restrict__ in,
                                             unsigned char* __restrict__ out,
                                             int width, int height,
                                             int radius) {
-  __shared__ float s_col[BLUR_TILE + 2 * MAX_BLUR_RADIUS];
-  const int x = blockIdx.x;
-  const int y0 = blockIdx.y * BLUR_TILE;
-  const int tile_len = BLUR_TILE + 2 * radius;
+  __shared__ float s_tile[COL_TILE_H + 2 * MAX_BLUR_RADIUS][COL_TILE_W + 1];
+  const int tx = threadIdx.x;
+  const int x = blockIdx.x * COL_TILE_W + tx;
+  const int y0 = blockIdx.y * COL_TILE_H;
+  const int tile_len = COL_TILE_H + 2 * radius;
+  const int cx = min(x, width - 1);
 
-  for (int i = threadIdx.x; i < tile_len; i += blockDim.x) {
+  for (int i = threadIdx.y; i < tile_len; i += COL_THREADS_Y) {
     const int gy = ClampInt(y0 + i - radius, 0, height - 1);
-    s_col[i] = in[static_cast<size_t>(gy) * width + x];
+    s_tile[i][tx] = in[static_cast<size_t>(gy) * width + cx];
   }
   __syncthreads();
 
-  const int y = y0 + threadIdx.x;
-  if (x >= width || y >= height) return;
-  float acc = 0.0f;
-  for (int k = -radius; k <= radius; ++k) {
-    acc += c_gauss_weights[k + radius] * s_col[threadIdx.x + radius + k];
+  if (x >= width) return;
+  for (int i = threadIdx.y; i < COL_TILE_H; i += COL_THREADS_Y) {
+    const int y = y0 + i;
+    if (y >= height) break;
+    float acc = 0.0f;
+    for (int k = -radius; k <= radius; ++k) {
+      acc += c_gauss_weights[k + radius] * s_tile[i + radius + k][tx];
+    }
+    out[static_cast<size_t>(y) * width + x] = ToByte(acc);
   }
-  out[static_cast<size_t>(y) * width + x] = ToByte(acc);
 }
 
 // ---------------------------------------------------------------------------

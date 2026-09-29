@@ -18,8 +18,8 @@ from PIL import Image
 
 # (width, height) pairs; the list is cycled when --count exceeds its length.
 SIZES = ((256, 256), (512, 512), (640, 480), (800, 600), (1024, 768),
-         (1280, 720), (1024, 1024), (1600, 1200), (1920, 1080),
-         (2048, 1536), (2560, 1440), (3840, 2160), (4096, 4096))
+         (1280, 720), (1024, 1024), (1600, 1200), (1920, 1080), (2048, 1536),
+         (2560, 1440), (3840, 2160), (4096, 4096))
 
 
 def make_image(width, height, rng):
@@ -28,9 +28,8 @@ def make_image(width, height, rng):
     image = np.empty((height, width, 3), dtype=np.float32)
     phase = rng.uniform(0, 2 * np.pi, size=3)
     for channel in range(3):
-        image[..., channel] = 90 + 40 * np.sin(
-            2 * np.pi * (u * rng.uniform(0.5, 2) + v * rng.uniform(0.5, 2)) +
-            phase[channel])
+        image[..., channel] = 90 + 40 * np.sin(2 * np.pi * (
+            u * rng.uniform(0.5, 2) + v * rng.uniform(0.5, 2)) + phase[channel])
 
     for _ in range(rng.integers(6, 14)):
         color = rng.uniform(20, 235, size=3)
@@ -52,11 +51,16 @@ def make_image(width, height, rng):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--output", default="data/input",
+    parser.add_argument("--output",
+                        default="data/input",
                         help="Directory to write PNGs to.")
-    parser.add_argument("--count", type=int, default=len(SIZES),
+    parser.add_argument("--count",
+                        type=int,
+                        default=len(SIZES),
                         help=f"Number of images (default: {len(SIZES)}).")
-    parser.add_argument("--seed", type=int, default=7,
+    parser.add_argument("--seed",
+                        type=int,
+                        default=7,
                         help="Random seed for reproducibility.")
     args = parser.parse_args()
 

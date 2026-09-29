@@ -21,7 +21,7 @@ For every image in a folder, the pipeline runs:
 | 3 | Equalization LUT from CDF | `BuildEqualizationLut` | single-block **Hillis-Steele parallel scan** in shared memory, `atomicMin` |
 | 4 | Apply LUT | `ApplyLut` | LUT staged in shared memory |
 | 5 | Gaussian blur, rows | `GaussianBlurRows` | **separable** convolution, shared-memory tile + halo, weights in **`__constant__` memory** |
-| 6 | Gaussian blur, columns | `GaussianBlurCols` | same, float intermediate buffer |
+| 6 | Gaussian blur, columns | `GaussianBlurCols` | **coalesced 2-D tiles** (32x64 + halo), bank-conflict padding, float intermediate |
 | 7 | Sobel gradient / edge map | `SobelMagnitude` | **2-D shared-memory tile** with 1-pixel halo, optional binary threshold |
 
 Histogram equalization recovers washed-out, low-contrast regions. The blur
@@ -51,9 +51,10 @@ All kernel source is in [`kernels/image_kernels.cu`](kernels/image_kernels.cu).
 ```
 
 1. **Compile:** `image_kernels.cu` is read as text and compiled by NVRTC to
-   PTX for the detected compute capability (`--gpu-architecture=compute_XY`).
-   The driver then JIT-compiles the PTX to SASS when `cuModuleLoadData` loads
-   it.
+   a **CUBIN** (native SASS) for the detected GPU (`--gpu-architecture=sm_XY`,
+   e.g. sm_86 on the RTX 3050 and sm_89 on the lab's L4), then loaded with
+   `cuModuleLoadData`. If NVRTC doesn't know that architecture, it falls back
+   to PTX, which the driver JIT-compiles.
 2. **Allocate once:** device buffers are sized for the largest image seen so
    far and reused across the whole batch, so later images don't pay for
    `cuMemAlloc`.
@@ -146,7 +147,50 @@ RESULTS_PLACEHOLDER
 
 ## Lessons learned
 
-LESSONS_PLACEHOLDER
+1. **Memory access pattern matters more than arithmetic.** My first column
+   blur was a copy of the row blur turned sideways, with one block per
+   column. On the RTX 3050 it took **3.63 ms** on a 4096x4096 image, against
+   0.95 ms for the row pass, because each warp read 32 vertically adjacent
+   pixels in 32 separate memory transactions. Re-tiling it as 32-wide x
+   64-tall blocks, so that `threadIdx.x` walks along a row, made every warp
+   load one coalesced transaction. It now takes **0.58 ms (6.2x faster)** and
+   total kernel time halved, from 6.9 to 3.8 ms. The FLOPs are identical; only
+   the memory access pattern changed.
+2. **PCIe transfers dominate end-to-end time.** On the largest image the
+   kernels take about 4 ms, but the host-to-device and device-to-host copies
+   take about 38 ms, roughly 85-90% of the GPU path. The GPU is still about
+   40x faster than the CPU end-to-end and over 250x kernel-to-kernel, but the
+   next optimization has to target transfers (pinned memory, streams,
+   copying back only the outputs you need), not kernels.
+3. **Small images don't pay off as much.** At 256x256 the whole pipeline runs
+   in about 0.15 ms of kernel time, and launch overhead plus copies cap the
+   speed-up at about 7x. It climbs past 50x from about 2 MP upwards. A real
+   batch system would pack small images together.
+4. **Floating-point errors get amplified along a pipeline.** The first
+   verification run failed: about 0.05% of pixels differed by up to
+   **10 gray levels**. The cause was the grayscale conversion. With
+   `--use_fast_math` the GPU fuses multiply-adds (FMA), so a value like
+   127.4999 rounded to 127 on one side and 128 on the other. That 1-level
+   difference moved a pixel into the neighbouring histogram bin. In the
+   washed-out band, equalization maps neighbouring bins about 10 levels
+   apart. Switching grayscale to 8.8 fixed point, `(77R + 150G + 29B + 128)
+   >> 8`, and the LUT to exact 64-bit integer math made those stages
+   **bit-exact**. The remaining differences are 1-level rounding in the float
+   blur, which Sobel can amplify to at most 4 levels (its kernel weights sum
+   to 4). That is why the tolerances are `gray 0, equalized 0, blurred 1,
+   edges 4`.
+5. **PTX vs CUBIN and driver compatibility.** In the Coursera lab the first
+   run failed with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION` (222). NVRTC 12.9 from
+   pip emits PTX that the lab's CUDA 12.6 driver can't JIT. Compiling
+   straight to SASS (`sm_89`) fixes it, because CUDA *minor-version
+   compatibility* covers CUBINs across all 12.x drivers but does not cover
+   newer PTX.
+6. **Going below the convenience libraries.** Windows Smart App Control
+   blocked CuPy's unsigned extension DLL, so I wrote my own ~250-line
+   `ctypes` layer over the Driver API and NVRTC. This taught me what a CUDA
+   runtime `<<<grid, block>>>` launch actually does underneath: contexts,
+   modules, `void**` parameter arrays, `__constant__` symbols through
+   `cuModuleGetGlobal`, and events for timing.
 
 ## Next steps
 
@@ -157,8 +201,8 @@ LESSONS_PLACEHOLDER
 * **Fuse kernels:** gray + histogram in one pass, and the column blur + Sobel
   sharing one shared-memory tile. That would cut global-memory round trips
   from 7 to about 3.
-* **Transpose-based column pass** (or 2-D tiles 32 columns wide) to make the
-  vertical blur fully coalesced.
+* **Register blocking / `float4` loads** in the row blur, which is now the
+  slower of the two blur passes.
 * **GPU image decode** with nvJPEG, since PNG/JPEG decoding on the CPU now
   dominates batch wall time.
 * Add **Canny** (non-maximum suppression plus hysteresis with a GPU
@@ -179,5 +223,6 @@ docs/                        figures and presentation outline
 ```
 
 Style: the CUDA code follows the Google C++ Style Guide (CamelCase function
-names, `k`-free macros for compile-time tile sizes shared with the host,
-2-space indent, 80 columns). The Python follows the Google Python Style Guide.
+names, 2-space indent, 80 columns, a comment on every kernel). Tile sizes are
+macros so the host code can mirror them. The Python follows the Google
+Python Style Guide and is formatted with `yapf --style=google`.

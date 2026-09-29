@@ -30,23 +30,27 @@ class GpuPipelineTest(unittest.TestCase):
             gpu.close()
         return gpu_result, pipeline.cpu_pipeline(rgb, params)
 
-    def _assert_close(self, gpu_result, cpu_result, tolerance):
-        for kind in ("gray", "equalized", "blurred", "edges"):
+    def _assert_close(self, gpu_result, cpu_result):
+        # GPU fast-math rounding flips pixels sitting on a .5 boundary by one
+        # level; the equalization LUT and the Sobel operator (gain up to 4 per
+        # input pixel) amplify that, so tolerances grow along the pipeline.
+        for kind, tolerance in pipeline.VERIFY_TOLERANCE.items():
             diff = np.abs(
                 getattr(gpu_result, kind).astype(int) -
                 getattr(cpu_result, kind).astype(int))
             self.assertLessEqual(diff.max(), tolerance, kind)
+            self.assertLess((diff > 1).mean(), 1e-3, kind)
 
     def test_random_image_matches_cpu(self):
         rng = np.random.default_rng(1)
         rgb = rng.integers(0, 256, size=(333, 517, 3), dtype=np.uint8)
-        self._assert_close(*self._run_both(rgb, pipeline.PipelineParams()), 2)
+        self._assert_close(*self._run_both(rgb, pipeline.PipelineParams()))
 
     def test_odd_sizes_and_large_sigma(self):
         rng = np.random.default_rng(2)
         rgb = rng.integers(40, 90, size=(17, 1001, 3), dtype=np.uint8)
         params = pipeline.PipelineParams(sigma=5.0)
-        self._assert_close(*self._run_both(rgb, params), 2)
+        self._assert_close(*self._run_both(rgb, params))
 
     def test_constant_image_is_unchanged(self):
         rgb = np.full((64, 64, 3), 77, dtype=np.uint8)

@@ -34,9 +34,11 @@ def plot_timing(rows, path):
     mpix = np.array([row["megapixels"] for row in rows])
     fig, (ax_time, ax_speed) = plt.subplots(1, 2, figsize=(12, 4.5))
     ax_time.loglog(mpix, [r["cpu_ms"] for r in rows], "o-", label="CPU (NumPy)")
-    ax_time.loglog(mpix, [r["gpu_total_ms"] for r in rows], "s-",
+    ax_time.loglog(mpix, [r["gpu_total_ms"] for r in rows],
+                   "s-",
                    label="GPU end-to-end (incl. PCIe copies)")
-    ax_time.loglog(mpix, [r["gpu_kernel_ms"] for r in rows], "^-",
+    ax_time.loglog(mpix, [r["gpu_kernel_ms"] for r in rows],
+                   "^-",
                    label="GPU kernels only")
     ax_time.set_xlabel("Image size (megapixels)")
     ax_time.set_ylabel("Time per image (ms)")
@@ -44,9 +46,11 @@ def plot_timing(rows, path):
     ax_time.grid(True, which="both", alpha=0.3)
     ax_time.legend()
 
-    ax_speed.semilogx(mpix, [r["speedup_total"] for r in rows], "s-",
+    ax_speed.semilogx(mpix, [r["speedup_total"] for r in rows],
+                      "s-",
                       label="end-to-end")
-    ax_speed.semilogx(mpix, [r["speedup_kernel"] for r in rows], "^-",
+    ax_speed.semilogx(mpix, [r["speedup_kernel"] for r in rows],
+                      "^-",
                       label="kernels only")
     ax_speed.set_xlabel("Image size (megapixels)")
     ax_speed.set_ylabel("Speed-up over CPU (x)")
@@ -77,15 +81,18 @@ def make_montage(stems, input_dir, output_dir, path, tile=320):
     columns = ("input", "equalized", "edges")
     rows = []
     for stem in stems:
-        inputs = [f for f in os.listdir(input_dir)
-                  if os.path.splitext(f)[0] == stem]
+        inputs = [
+            f for f in os.listdir(input_dir) if os.path.splitext(f)[0] == stem
+        ]
         images = [Image.open(os.path.join(input_dir, inputs[0])).convert("RGB")]
         for kind in columns[1:]:
-            images.append(Image.open(os.path.join(
-                output_dir, f"{stem}_{kind}.png")).convert("RGB"))
-        rows.append([image.resize((tile, int(tile * image.height /
-                                              image.width)))
-                     for image in images])
+            images.append(
+                Image.open(os.path.join(output_dir,
+                                        f"{stem}_{kind}.png")).convert("RGB"))
+        rows.append([
+            image.resize((tile, int(tile * image.height / image.width)))
+            for image in images
+        ])
     height = sum(row[0].height for row in rows)
     sheet = Image.new("RGB", (tile * len(columns), height), "white")
     y = 0

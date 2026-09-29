@@ -24,9 +24,14 @@ KERNEL_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "kernels",
                            "image_kernels.cu")
 MAX_BLUR_RADIUS = 16  # Must match MAX_BLUR_RADIUS in image_kernels.cu.
 BLUR_TILE = 128  # Must match BLUR_TILE in image_kernels.cu.
+COL_TILE_W = 32  # Must match COL_TILE_W in image_kernels.cu.
+COL_TILE_H = 64  # Must match COL_TILE_H in image_kernels.cu.
+COL_THREADS_Y = 8  # Must match COL_THREADS_Y in image_kernels.cu.
 SOBEL_TILE = 16  # Must match SOBEL_TILE in image_kernels.cu.
 LINEAR_BLOCK = 256
 HIST_BINS = 256
+# Max allowed |GPU - CPU| per output, in gray levels (see README, "Lessons").
+VERIFY_TOLERANCE = {"gray": 0, "equalized": 0, "blurred": 1, "edges": 4}
 
 
 @dataclasses.dataclass
@@ -70,9 +75,9 @@ def _to_byte(values):
 def cpu_pipeline(rgb, params):
     """Vectorized NumPy implementation of the full pipeline."""
     start = time.perf_counter()
-    rgb_f = rgb.astype(np.float32)
-    gray = _to_byte(0.299 * rgb_f[..., 0] + 0.587 * rgb_f[..., 1] +
-                    0.114 * rgb_f[..., 2])
+    rgb_i = rgb.astype(np.uint32)
+    gray = ((77 * rgb_i[..., 0] + 150 * rgb_i[..., 1] + 29 * rgb_i[..., 2] +
+             128) >> 8).astype(np.uint8)
 
     hist = np.bincount(gray.ravel(), minlength=HIST_BINS).astype(np.int64)
     cdf = np.cumsum(hist)
@@ -81,8 +86,8 @@ def cpu_pipeline(rgb, params):
     if denom == 0:
         lut = np.arange(HIST_BINS, dtype=np.uint8)
     else:
-        scaled = (cdf - cdf_min).astype(np.float32) * 255.0 / np.float32(denom)
-        lut = np.where(cdf >= cdf_min, _to_byte(scaled), 0).astype(np.uint8)
+        scaled = ((cdf - cdf_min) * 255 + denom // 2) // denom
+        lut = np.where(cdf >= cdf_min, scaled, 0).astype(np.uint8)
     equalized = lut[gray]
 
     radius = params.radius
@@ -132,9 +137,8 @@ class GpuPipeline:
     pays for cudaMalloc when a larger image than any seen so far arrives.
     """
 
-    _KERNELS = ("RgbToGray", "Histogram256", "BuildEqualizationLut",
-                "ApplyLut", "GaussianBlurRows", "GaussianBlurCols",
-                "SobelMagnitude")
+    _KERNELS = ("RgbToGray", "Histogram256", "BuildEqualizationLut", "ApplyLut",
+                "GaussianBlurRows", "GaussianBlurCols", "SobelMagnitude")
     _STAGES = ("h2d", "gray", "histogram", "lut", "equalize", "blur_rows",
                "blur_cols", "sobel", "d2h")
 
@@ -144,8 +148,9 @@ class GpuPipeline:
         with open(KERNEL_FILE, encoding="utf-8") as source_file:
             source = source_file.read()
         compile_start = time.perf_counter()
-        self.ptx = self._dev.compile_ptx(source, "image_kernels.cu")
-        self._module = self._dev.load_module(self.ptx)
+        self.binary, self.binary_kind = self._dev.compile_kernels(
+            source, "image_kernels.cu")
+        self._module = self._dev.load_module(self.binary)
         self.compile_ms = (time.perf_counter() - compile_start) * 1000.0
         self._fn = {
             name: self._dev.get_function(self._module, name)
@@ -154,8 +159,9 @@ class GpuPipeline:
         self._upload_gaussian_weights()
         self._capacity = 0
         self._buffers = {}
-        self._events = [self._dev.create_event() for _ in range(
-            len(self._STAGES) + 1)]
+        self._events = [
+            self._dev.create_event() for _ in range(len(self._STAGES) + 1)
+        ]
         # Enough blocks to fill every SM several times for grid-stride loops.
         self._linear_grid = device.multiprocessor_count * 8
 
@@ -206,8 +212,8 @@ class GpuPipeline:
         h = ctypes.c_int(height)
         radius = ctypes.c_int(self._params.radius)
         threshold = ctypes.c_float(self._params.edge_threshold)
-        linear_grid = (min(self._linear_grid,
-                           _ceil_div(num_pixels, LINEAR_BLOCK)), 1, 1)
+        linear_grid = (min(self._linear_grid, _ceil_div(num_pixels,
+                                                        LINEAR_BLOCK)), 1, 1)
         linear_block = (LINEAR_BLOCK, 1, 1)
         events = self._events
         dev = self._dev
@@ -234,14 +240,15 @@ class GpuPipeline:
                    (buf["equalized"], buf["blur_tmp"], w, h, radius))
         dev.record_event(events[6])
         dev.launch(self._fn["GaussianBlurCols"],
-                   (width, _ceil_div(height, BLUR_TILE), 1), (BLUR_TILE, 1, 1),
+                   (_ceil_div(width, COL_TILE_W), _ceil_div(
+                       height, COL_TILE_H), 1), (COL_TILE_W, COL_THREADS_Y, 1),
                    (buf["blur_tmp"], buf["blurred"], w, h, radius))
         dev.record_event(events[7])
-        dev.launch(self._fn["SobelMagnitude"],
-                   (_ceil_div(width, SOBEL_TILE), _ceil_div(height,
-                                                            SOBEL_TILE), 1),
-                   (SOBEL_TILE, SOBEL_TILE, 1),
-                   (buf["blurred"], buf["edges"], w, h, threshold))
+        dev.launch(
+            self._fn["SobelMagnitude"],
+            (_ceil_div(width, SOBEL_TILE), _ceil_div(height, SOBEL_TILE), 1),
+            (SOBEL_TILE, SOBEL_TILE, 1),
+            (buf["blurred"], buf["edges"], w, h, threshold))
         dev.record_event(events[8])
 
         outputs = {
@@ -258,8 +265,8 @@ class GpuPipeline:
             stage: dev.elapsed_ms(events[i], events[i + 1])
             for i, stage in enumerate(self._STAGES)
         }
-        kernel_ms = sum(v for k, v in stage_ms.items() if k not in ("h2d",
-                                                                     "d2h"))
+        kernel_ms = sum(
+            v for k, v in stage_ms.items() if k not in ("h2d", "d2h"))
         return PipelineResult(outputs["gray"], outputs["equalized"],
                               outputs["blurred"], outputs["edges"], kernel_ms,
                               total_ms, stage_ms)
