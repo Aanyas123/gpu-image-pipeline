@@ -1,0 +1,23 @@
+2026-09-29 18:35:40,831 INFO Run started 2026-09-29T18:35:40 on Linux-6.5.0-1024-aws-x86_64-with-glibc2.29 (Python 3.8.10)
+2026-09-29 18:35:40,831 INFO GPU: NVIDIA L4 | compute capability 8.9 | 58 SMs | 22.1 GiB | driver CUDA 12.6 | NVRTC 12.9
+2026-09-29 18:35:40,995 INFO Compiled kernels/image_kernels.cu with NVRTC in 161.0 ms (28640-byte CUBIN for sm_89)
+2026-09-29 18:35:40,995 INFO Parameters: sigma=1.50 radius=5 threshold=-1.0 repeat=3
+2026-09-29 18:35:40,995 INFO Processing 13 image(s) from data/input
+2026-09-29 18:35:41,087 INFO [1/13] synthetic_00_256x256.png 256x256: GPU kernels 0.10 ms, GPU total 0.24 ms, CPU 3.05 ms (x12.8 end-to-end, x30.8 kernels), max |diff| 0, 0.000% px off by >1 [PASS]
+2026-09-29 18:35:41,332 INFO [2/13] synthetic_01_512x512.png 512x512: GPU kernels 0.06 ms, GPU total 0.38 ms, CPU 11.82 ms (x31.2 end-to-end, x190.5 kernels), max |diff| 2, 0.002% px off by >1 [PASS]
+2026-09-29 18:35:41,583 INFO [3/13] synthetic_02_640x480.png 640x480: GPU kernels 0.07 ms, GPU total 0.42 ms, CPU 10.92 ms (x26.0 end-to-end, x149.8 kernels), max |diff| 0, 0.000% px off by >1 [PASS]
+2026-09-29 18:35:41,927 INFO [4/13] synthetic_03_800x600.png 800x600: GPU kernels 0.05 ms, GPU total 0.54 ms, CPU 20.09 ms (x37.3 end-to-end, x395.4 kernels), max |diff| 2, 0.002% px off by >1 [PASS]
+2026-09-29 18:35:42,398 INFO [5/13] synthetic_04_1024x768.png 1024x768: GPU kernels 0.07 ms, GPU total 0.77 ms, CPU 29.54 ms (x38.5 end-to-end, x446.0 kernels), max |diff| 3, 0.002% px off by >1 [PASS]
+2026-09-29 18:35:42,936 INFO [6/13] synthetic_05_1280x720.png 1280x720: GPU kernels 0.07 ms, GPU total 0.88 ms, CPU 33.88 ms (x38.5 end-to-end, x480.1 kernels), max |diff| 2, 0.001% px off by >1 [PASS]
+2026-09-29 18:35:43,557 INFO [7/13] synthetic_06_1024x1024.png 1024x1024: GPU kernels 0.08 ms, GPU total 0.98 ms, CPU 29.64 ms (x30.2 end-to-end, x367.6 kernels), max |diff| 2, 0.002% px off by >1 [PASS]
+2026-09-29 18:35:44,551 INFO [8/13] synthetic_07_1600x1200.png 1600x1200: GPU kernels 0.12 ms, GPU total 1.46 ms, CPU 57.83 ms (x39.5 end-to-end, x488.7 kernels), max |diff| 2, 0.001% px off by >1 [PASS]
+2026-09-29 18:35:45,588 INFO [9/13] synthetic_08_1920x1080.png 1920x1080: GPU kernels 0.12 ms, GPU total 1.58 ms, CPU 59.19 ms (x37.4 end-to-end, x486.7 kernels), max |diff| 2, 0.002% px off by >1 [PASS]
+2026-09-29 18:35:47,079 INFO [10/13] synthetic_09_2048x1536.png 2048x1536: GPU kernels 0.17 ms, GPU total 2.20 ms, CPU 98.07 ms (x44.6 end-to-end, x576.5 kernels), max |diff| 2, 0.002% px off by >1 [PASS]
+2026-09-29 18:35:48,744 INFO [11/13] synthetic_10_2560x1440.png 2560x1440: GPU kernels 0.19 ms, GPU total 2.46 ms, CPU 122.45 ms (x49.7 end-to-end, x632.4 kernels), max |diff| 2, 0.001% px off by >1 [PASS]
+2026-09-29 18:35:52,240 INFO [12/13] synthetic_11_3840x2160.png 3840x2160: GPU kernels 0.44 ms, GPU total 5.26 ms, CPU 318.46 ms (x60.6 end-to-end, x724.3 kernels), max |diff| 2, 0.001% px off by >1 [PASS]
+2026-09-29 18:35:59,493 INFO [13/13] synthetic_12_4096x4096.png 4096x4096: GPU kernels 1.22 ms, GPU total 10.73 ms, CPU 851.83 ms (x79.4 end-to-end, x698.7 kernels), max |diff| 2, 0.001% px off by >1 [PASS]
+2026-09-29 18:35:59,575 INFO Batch done: 13 images, 39.8 megapixels, 18.6 s wall (includes PNG decode/encode and CPU reference)
+2026-09-29 18:35:59,575 INFO GPU kernel throughput 14378 Mpix/s; end-to-end incl. PCIe copies 1425 Mpix/s
+2026-09-29 18:35:59,575 INFO CPU reference 24 Mpix/s -> overall speed-up x59.0 (end-to-end) / x595.4 (kernels only)
+2026-09-29 18:35:59,580 INFO Verification: worst per-pixel difference vs CPU = 3 gray level(s); per-stage tolerances {'gray': 0, 'equalized': 0, 'blurred': 1, 'edges': 4} -> PASS
+2026-09-29 18:35:59,580 INFO Metrics written to data/output/metrics.csv
